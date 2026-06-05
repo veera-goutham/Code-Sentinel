@@ -6,10 +6,13 @@ Run with:
 """
 import base64
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 import streamlit as st
 from streamlit_option_menu import option_menu
@@ -220,10 +223,13 @@ def _esc(text: str) -> str:
 
 
 def render_mermaid(diagram: str) -> None:
-    """Render a Mermaid diagram via mermaid.ink as a PNG image."""
-    encoded = base64.urlsafe_b64encode(diagram.encode("utf-8")).decode("ascii")
-    url = f"https://mermaid.ink/img/{encoded}?type=png&bgColor=0e1117"
-    st.image(url, use_container_width=True)
+    """Render a Mermaid diagram client-side via streamlit-mermaid (no external calls)."""
+    try:
+        from streamlit_mermaid import st_mermaid
+        st_mermaid(diagram, height=600)
+    except Exception:
+        st.warning("Could not render diagram. Showing source instead.")
+        st.code(diagram, language="text")
 
 
 def _fmt_ts(ts_raw: str) -> str:
@@ -421,6 +427,7 @@ if st.session_state.get("_last_input_key") != _current_input_key:
     for _k in [
         "review_result", "last_decision", "similar_reviews",
         "memory_context", "assistant_messages", "active_result_tab",
+        "script_s3_uri",
     ]:
         st.session_state.pop(_k, None)
     st.session_state["_last_input_key"] = _current_input_key
@@ -823,9 +830,19 @@ if _active_tab_label == "📊 Before / After":
                     st.session_state["last_decision"] = _decision_record
                     st.success("Discarded. Reason logged to memory.")
         else:
+            confirm = st.checkbox(
+                "I understand this will overwrite the production script in S3 "
+                "(a timestamped backup will be saved first)",
+                key="approve_confirm",
+            )
             _btn_l, _btn_r = st.columns(2)
             with _btn_l:
-                approve_clicked = st.button("✅ Approve & Apply to Glue", type="primary")
+                approve_clicked = st.button(
+                    "✅ Approve & Apply to Glue",
+                    type="primary",
+                    disabled=not confirm,
+                    key="approve_btn",
+                )
             with _btn_r:
                 reject_clicked = st.button("❌ Reject")
             reject_reason = st.text_area(
@@ -852,15 +869,8 @@ if _active_tab_label == "📊 Before / After":
                         _backup_uri = backup_s3_object(_s3_uri, _bp)
                         overwrite_s3_object(_s3_uri, perf["optimized_code"])
 
-                        _docs_result = review.get("documentation")
-                        if _docs_result:
-                            _docx = build_docx(
-                                _docs_result, st.session_state.get("reviewed_job", ""))
-                            _dk  = (f"{_prefix}/_docs/{_stem}_{_ts}.docx"
-                                    if _prefix else f"_docs/{_stem}_{_ts}.docx")
-                            upload_s3_artifact(_bucket, _dk, _docx)
-                            _docs_s3_path = f"s3://{_bucket}/{_dk}"
-
+                        # Audit record logged immediately after overwrite so the
+                        # trail is safe even if the optional doc upload fails.
                         _sv = perf.get("estimated_savings", {})
                         _decision_record = {
                             "timestamp":           datetime.now(timezone.utc).isoformat(),
@@ -871,18 +881,34 @@ if _active_tab_label == "📊 Before / After":
                             "reason":              None,
                             "s3_backup_path":      _backup_uri,
                             "s3_review_folder":    None,
-                            "s3_doc_path":         _docs_s3_path,
+                            "s3_doc_path":         None,
                             "savings_per_run_usd": _sv.get("before_per_run_usd", 0) - _sv.get("after_per_run_usd", 0),
                         }
                         log_decision(_decision_record)
+
+                        try:
+                            _docs_result = review.get("documentation")
+                            if _docs_result:
+                                _docx = build_docx(
+                                    _docs_result, st.session_state.get("reviewed_job", ""))
+                                _dk  = (f"{_prefix}/_docs/{_stem}_{_ts}.docx"
+                                        if _prefix else f"_docs/{_stem}_{_ts}.docx")
+                                upload_s3_artifact(_bucket, _dk, _docx)
+                                _docs_s3_path = f"s3://{_bucket}/{_dk}"
+                                _decision_record["s3_doc_path"] = _docs_s3_path
+                        except Exception as _doc_exc:
+                            logger.warning(
+                                "Doc upload failed (audit record already saved): %s", _doc_exc
+                            )
+
                         _findings_parts = []
                         _sec_result = review.get("security")
                         if _sec_result and isinstance(_sec_result, dict):
                             _issues = _sec_result.get("issues") or _sec_result.get("findings") or []
                             if _issues:
                                 _findings_parts.append(f"Security: {len(_issues)} issue(s)")
-                        if perf and perf.get("optimizations"):
-                            _findings_parts.append(f"Perf: {len(perf['optimizations'])} optimization(s)")
+                        if perf and perf.get("summary_of_changes"):
+                            _findings_parts.append(f"Perf: {len(perf['summary_of_changes'])} optimization(s)")
                         _findings_summary = "; ".join(_findings_parts) if _findings_parts else None
                         _original_for_memory = st.session_state.get("original_script_content")
                         store_memory(_decision_record, _original_for_memory, _findings_summary)
@@ -923,8 +949,8 @@ if _active_tab_label == "📊 Before / After":
                         _issues = _sec_result.get("issues") or _sec_result.get("findings") or []
                         if _issues:
                             _findings_parts.append(f"Security: {len(_issues)} issue(s)")
-                    if perf and perf.get("optimizations"):
-                        _findings_parts.append(f"Perf: {len(perf['optimizations'])} optimization(s)")
+                    if perf and perf.get("summary_of_changes"):
+                        _findings_parts.append(f"Perf: {len(perf['summary_of_changes'])} optimization(s)")
                     _findings_summary = "; ".join(_findings_parts) if _findings_parts else None
                     _original_for_memory = st.session_state.get("original_script_content")
                     store_memory(_decision_record, _original_for_memory, _findings_summary)
@@ -1053,13 +1079,22 @@ if _active_tab_label == "🔗 Lineage":
         _job_slug_l = st.session_state.get("reviewed_job", "job").replace(" ", "_").lower()
         diagram_raw = lin.get("mermaid_diagram", "")
         diagram = diagram_raw.replace("\\n", "\n")
-        st.download_button(
-            "⬇️ Download lineage diagram",
-            data=diagram,
-            file_name=f"{_job_slug_l}_lineage.mmd",
-            mime="text/plain",
-            key="dl_lin",
-        )
+        _lin_dl_col, _lin_live_col = st.columns(2)
+        with _lin_dl_col:
+            st.download_button(
+                "⬇️ Download diagram source (.mmd)",
+                data=diagram,
+                file_name=f"{_job_slug_l}_lineage.mmd",
+                mime="text/plain",
+                key="dl_lin",
+            )
+        with _lin_live_col:
+            _live_state = json.dumps({"code": diagram, "mermaid": {"theme": "dark"}})
+            _live_b64 = base64.urlsafe_b64encode(_live_state.encode("utf-8")).decode("ascii")
+            st.link_button(
+                "🔗 Open in mermaid.live",
+                url=f"https://mermaid.live/edit#base64:{_live_b64}",
+            )
 
         st.markdown(f"> {lin.get('dependency_summary', '')}")
 

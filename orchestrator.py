@@ -23,8 +23,14 @@ _CACHE_DIR = Path("./cache/reviews")
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _script_hash(code: str, agents: list[str]) -> str:
-    key = code.strip() + "|" + ",".join(sorted(agents))
+def _script_hash(code: str, agents: list[str], memory_context: str = "") -> str:
+    key = (
+        code.strip()
+        + "|"
+        + ",".join(sorted(agents))
+        + "|"
+        + hashlib.sha256(memory_context.encode("utf-8")).hexdigest()[:8]
+    )
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -124,7 +130,7 @@ def review_script(
     """
     active = selected_agents if selected_agents is not None else set(_AGENT_NAMES)
 
-    cache_key = _script_hash(script, sorted(active))
+    cache_key = _script_hash(script, sorted(active), memory_context)
     cached = _cache_load(cache_key)
     if cached is not None:
         logger.info("Cache hit for %s", cache_key)

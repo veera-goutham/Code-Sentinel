@@ -334,7 +334,11 @@ if source == "From AWS Glue":
 
     selected = st.selectbox("Glue jobs in your account", jobs, index=0)
 
-    details = get_glue_job_details(selected)
+    try:
+        details = get_glue_job_details(selected)
+    except Exception as e:
+        st.error(f"Failed to fetch Glue job details: {e}")
+        st.stop()
     command = details.get("Command", {})
     script_location = command.get("ScriptLocation", "")
     job_type = command.get("Name", "")

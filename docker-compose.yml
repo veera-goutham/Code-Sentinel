@@ -1,0 +1,13 @@
+services:
+  code-sentinel:
+    build: .
+    image: code-sentinel:latest
+    ports:
+      - "8501:8501"
+    # Copy .env.example to .env and fill in your AWS credentials before running
+    env_file: .env
+    volumes:
+      - ./chroma_db:/app/chroma_db
+      - ./cache:/app/cache
+      - ./code_sentinel_audit.jsonl:/app/code_sentinel_audit.jsonl
+    restart: unless-stopped

@@ -45,7 +45,7 @@ You can explore the UI without any AWS credentials:
 ```
 Streamlit UI
     └── orchestrator.py
-            └── ThreadPoolExecutor (5 agents in parallel)
+            └── LangGraph StateGraph (5 agents fan-out / fan-in)
                     ├── performance_agent  → optimised rewrite + cost estimate
                     ├── documentation_agent → Word doc generation
                     ├── security_agent     → PII + compliance scan
@@ -62,15 +62,16 @@ Streamlit UI
 
 ## Demo Jobs
 
-The following sample Glue jobs are pre-loaded in the demo AWS account (`ap-south-2`):
+The following sample Glue jobs exist in the demo AWS account (`ap-south-2`, bucket `s3://aws-glue-assets-703461918404-ap-south-2/scripts/`):
 
-| Job | Description |
-|-----|-------------|
-| `etl_customer_orders` | Ingests raw order events from S3, joins with customer dim |
-| `transform_product_events` | Normalises product click-stream data for the analytics layer |
-| `aggregate_daily_sales` | Rolls up transactional data to daily sales summaries |
-| `process_user_clickstream` | Sessionises raw clickstream and computes engagement metrics |
-| `sync_inventory_data` | Syncs inventory deltas from the warehouse feed into the data lake |
+| Job | Designed to be caught by |
+|-----|--------------------------|
+| `customer_daily_agg` | Performance agent (missing broadcast hint, oversized cluster) |
+| `pii_masking_etl` | Security agent (hardcoded AWS keys, Aadhaar/PAN PII columns) |
+| `sales_dim_load` | Documentation agent (cryptic variable names, magic numbers) |
+| `inventory_pipeline` | Performance agent (cross-join, SELECT *, Python UDF instead of native Spark) |
+| `customer_lookup` | Test generation agent (no error handling, no existing tests) |
+| `Sample_job` | Smoke-test job — prints "hello" only |
 
 ---
 
